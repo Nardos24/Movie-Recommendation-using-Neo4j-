@@ -39,6 +39,19 @@ def preprocess_data():
 
     return movies_df, ratings_df
 
+def relabel_existing_movies():
+    """
+    Relabel all existing Movie nodes to Movie1 in Neo4j to avoid conflicts.
+    """
+    execute_query(
+        """
+        MATCH (m:Movie)
+        REMOVE m:Movie
+        SET m:Movie1;
+        """
+    )
+    print("Relabeled existing Movie nodes to Movie1.")
+
 def import_movies_and_genres(movies_df):
     """
     Import movies and genres into Neo4j.
@@ -46,16 +59,17 @@ def import_movies_and_genres(movies_df):
     for _, row in movies_df.iterrows():
         genres = row['genres']  # Extract genres
 
-        # Create or match Movie nodes by unique 'id' property
+        # Safely match or create Movie nodes
         execute_query(
             """
             MERGE (m:Movie {id: $id})
-            SET m.title = $title, m.release_year = $release_year
+            ON CREATE SET m.title = $title, m.release_year = $release_year
+            ON MATCH SET m.title = $title, m.release_year = $release_year
             """,
             {"id": row['id'], "title": row['title'], "release_year": row['release_year']}
         )
 
-        # Create or match Genre nodes and link them to movies
+        # Safely match or create Genre nodes and link them to movies
         for genre in genres:
             execute_query(
                 """
@@ -108,6 +122,9 @@ if __name__ == "__main__":
     # Preprocess data
     movies_df, ratings_df = preprocess_data()
     print("Data preprocessed successfully.")
+
+    # Relabel existing Movie nodes to Movie1
+    relabel_existing_movies()
 
     # Import movies and genres
     import_movies_and_genres(movies_df)

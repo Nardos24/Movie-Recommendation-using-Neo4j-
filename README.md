@@ -52,9 +52,11 @@ The graph database visualized above shows:
 
 1. **Clone this repository**:
    ```bash
-   git clone <repository-url>
-   cd <repository-folder>
-Install dependencies:
+   git clone <https://github.com/Nardos24/Movie-Recommendation-using-Neo4j-.git>
+   cd <Movie-Recommendation-using-Neo4j>
+
+   ```
+# Install dependencies:
 ```bash
 pip install neo4j
  ```
