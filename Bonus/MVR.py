@@ -1,146 +1,132 @@
-from neo4j import GraphDatabase
 import pandas as pd
+from neo4j import GraphDatabase
 import ast
 
-# Connect to Neo4j
-URI = "bolt://localhost:7687"  # Adjust if you're using a remote Neo4j instance
-USERNAME = "neo4j"             # Your Neo4j username
-PASSWORD = "Nardi1234"     # Your Neo4j password
+#  Preprocess the Dataset
 
-driver = GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD))
+movies_df = pd.read_csv('movies_metadata.csv', low_memory=False)
+ratings_df = pd.read_csv('ratings_small.csv')
 
-def execute_query(query, parameters=None):
-    with driver.session() as session:
-        session.run(query, parameters)
+movies_df = movies_df[['id', 'title', 'genres', 'release_date']]
+movies_df = movies_df[movies_df['id'].str.isdigit()]
+movies_df['id'] = movies_df['id'].astype(int)
 
-def preprocess_data():
-    """
-    Preprocess the data: Clean movies metadata and user ratings.
-    """
-    movies_df = pd.read_csv("movies_metadata.csv", low_memory=False)
-    ratings_df = pd.read_csv("ratings_small.csv")
+def parse_genres(genres_str):
+    genres = []
+    try:
+        genres_list = ast.literal_eval(genres_str)
+        for genre in genres_list:
+            genres.append(genre['name'])
+    except:
+        pass
+    return genres
 
-    # Clean movies data
-    movies_df = movies_df[['id', 'title', 'genres', 'release_date']].dropna()
-    movies_df['release_year'] = movies_df['release_date'].apply(lambda x: x.split('-')[0])
+movies_df['genres_list'] = movies_df['genres'].apply(parse_genres)
+movies_df['release_year'] = pd.to_datetime(movies_df['release_date'], errors='coerce').dt.year
 
-    # Parse genres correctly
-    def extract_genres(genre_str):
-        try:
-            genre_list = ast.literal_eval(genre_str)  # Convert JSON-like string to Python list
-            return [g['name'] for g in genre_list] if isinstance(genre_list, list) else []
-        except Exception:
-            return []
+ratings_df = ratings_df[ratings_df['movieId'].isin(movies_df['id'])]
 
-    movies_df['genres'] = movies_df['genres'].apply(extract_genres)
+driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "Nardi1234"))  # Replace 'your_password' with your Neo4j password
 
-    # Clean ratings data
-    ratings_df = ratings_df[['userId', 'movieId', 'rating']]
+def create_constraints(tx):
+    tx.run("CREATE CONSTRAINT IF NOT EXISTS FOR (u:User) REQUIRE u.userId IS UNIQUE;")
+    tx.run("CREATE CONSTRAINT IF NOT EXISTS FOR (m:Movie) REQUIRE m.id IS UNIQUE;")
+    tx.run("CREATE CONSTRAINT IF NOT EXISTS FOR (g:Genre) REQUIRE g.name IS UNIQUE;")
 
-    return movies_df, ratings_df
+with driver.session() as session:
+    session.execute_write(create_constraints)
 
-def relabel_existing_movies():
-    """
-    Relabel all existing Movie nodes to Movie1 in Neo4j to avoid conflicts.
-    """
-    execute_query(
-        """
-        MATCH (m:Movie)
-        REMOVE m:Movie
-        SET m:Movie1;
-        """
+def add_movies_and_genres(tx, movies_batch):
+    query = """
+    UNWIND $movies AS movie
+    MERGE (m:Movie {id: movie.id})
+    SET m.title = movie.title, m.release_year = movie.release_year
+    FOREACH (genreName IN movie.genres_list |
+        MERGE (g:Genre {name: genreName})
+        MERGE (m)-[:BELONGS_TO]->(g)
     )
-    print("Relabeled existing Movie nodes to Movie1.")
+    """
+    tx.run(query, movies=movies_batch)
 
-def import_movies_and_genres(movies_df):
-    """
-    Import movies and genres into Neo4j.
-    """
-    for _, row in movies_df.iterrows():
-        genres = row['genres']  # Extract genres
+movies_data = movies_df[['id', 'title', 'release_year', 'genres_list']].to_dict('records')
+batch_size = 1000
+with driver.session() as session:
+    for i in range(0, len(movies_data), batch_size):
+        session.execute_write(add_movies_and_genres, movies_data[i:i+batch_size])
 
-        # Safely match or create Movie nodes
-        execute_query(
-            """
-            MERGE (m:Movie {id: $id})
-            ON CREATE SET m.title = $title, m.release_year = $release_year
-            ON MATCH SET m.title = $title, m.release_year = $release_year
-            """,
-            {"id": row['id'], "title": row['title'], "release_year": row['release_year']}
-        )
-
-        # Safely match or create Genre nodes and link them to movies
-        for genre in genres:
-            execute_query(
-                """
-                MERGE (g:Genre {name: $genre})
-                MERGE (m:Movie {id: $id})-[:BELONGS_TO]->(g)
-                """,
-                {"genre": genre, "id": row['id']}
-            )
-
-def import_ratings(ratings_df):
-    """
-    Import user ratings into Neo4j.
-    """
-    for _, row in ratings_df.iterrows():
-        execute_query(
-            """
-            MERGE (u:User {id: $userId})
-            MERGE (m:Movie {id: $movieId})
-            MERGE (u)-[:WATCHED {rating: $rating}]->(m)
-            """,
-            {"userId": row['userId'], "movieId": row['movieId'], "rating": row['rating']}
-        )
-
-def generate_content_recommendations(user_id):
-    """
-    Generate content-based recommendations for a user.
-    """
+def add_users_and_ratings(tx, ratings_batch):
     query = """
-    MATCH (u:User {id: $userId})-[:WATCHED]->(m:Movie)-[:SIMILAR]->(rec:Movie)
-    RETURN rec.title AS recommendation
-    LIMIT 10
+    UNWIND $ratings AS rating
+    MERGE (u:User {userId: rating.userId})
+    MERGE (m:Movie {id: rating.movieId})
+    MERGE (u)-[r:WATCHED]->(m)
+    SET r.rating = rating.rating
     """
-    with driver.session() as session:
-        return [record['recommendation'] for record in session.run(query, {"userId": user_id})]
+    tx.run(query, ratings=ratings_batch)
 
-def generate_collaborative_recommendations(user_id):
-    """
-    Generate collaborative filtering recommendations for a user.
-    """
+ratings_data = ratings_df[['userId', 'movieId', 'rating']].to_dict('records')
+batch_size = 10000
+with driver.session() as session:
+    for i in range(0, len(ratings_data), batch_size):
+        session.execute_write(add_users_and_ratings, ratings_data[i:i+batch_size])
+
+def recommend_content_based(tx, user_id, limit=10):
     query = """
-    MATCH (u:User {id: $userId})-[:SIMILAR_USER]->(similar:User)-[:WATCHED]->(rec:Movie)
+    MATCH (u:User {userId: $user_id})-[:WATCHED]->(m:Movie)-[:SIMILAR]->(rec:Movie)
     WHERE NOT (u)-[:WATCHED]->(rec)
-    RETURN rec.title AS recommendation
-    LIMIT 10
+    RETURN rec.title AS title, rec.release_year AS year
+    LIMIT $limit
     """
+    result = tx.run(query, user_id=user_id, limit=limit)
+    return [record for record in result]
+
+def recommend_collaborative(tx, user_id, limit=10):
+    query = """
+    MATCH (u1:User {userId: $user_id})-[:WATCHED]->(m:Movie)<-[:WATCHED]-(u2:User)
+    MATCH (u2)-[:WATCHED]->(rec:Movie)
+    WHERE NOT (u1)-[:WATCHED]->(rec)
+    RETURN rec.title AS title, rec.release_year AS year
+    LIMIT $limit
+    """
+    result = tx.run(query, user_id=user_id, limit=limit)
+    return [record for record in result]
+
+def recommend_movies(user_id):
     with driver.session() as session:
-        return [record['recommendation'] for record in session.run(query, {"userId": user_id})]
+        recommendations = session.execute_read(recommend_content_based, user_id=user_id)
+        if not recommendations:
+            # Fallback to collaborative filtering
+            recommendations = session.execute_read(recommend_collaborative, user_id=user_id)
+        return recommendations
 
 if __name__ == "__main__":
-    # Preprocess data
-    movies_df, ratings_df = preprocess_data()
-    print("Data preprocessed successfully.")
+    # Create the movie-similarity graph in Neo4j
+    with driver.session() as session:
+        session.run("""
+        CALL gds.graph.project(
+          'movie-similarity-graph',
+          'Movie',
+          {BELONGS_TO: {type: 'BELONGS_TO', orientation: 'UNDIRECTED'}}
+        )
+        """)
 
-    # Relabel existing Movie nodes to Movie1
-    relabel_existing_movies()
+        session.run("""
+        CALL gds.nodeSimilarity.write('movie-similarity-graph', {
+          similarityCutoff: 0.1,
+          writeRelationshipType: 'SIMILAR',
+          writeProperty: 'similarity'
+        })
+        """)
 
-    # Import movies and genres
-    import_movies_and_genres(movies_df)
-    print("Movies and genres imported successfully.")
+    # Get recommendations for a user
+    user_id = 1
+    recommendations = recommend_movies(user_id)
 
-    # Import user ratings
-    import_ratings(ratings_df)
-    print("Ratings imported successfully.")
-
-    # Generate recommendations
-    user_id = 1  # Example user ID
-    recommendations = generate_content_recommendations(user_id)
-    if not recommendations:
-        recommendations = generate_collaborative_recommendations(user_id)
-
-    if not recommendations:
-        recommendations = ["No recommendations available."]
-
-    print(f"Recommended movies for user {user_id}: {recommendations}")
+    if recommendations:
+        print(f"Recommendations for User {user_id}:")
+        for rec in recommendations:
+            print(f"- {rec['title']} ({rec['year']})")
+    else:
+        print(f"No recommendations found for User {user_id}.")
+    
+    driver.close()

@@ -47,7 +47,7 @@ class MovieRecommendationSystem:
         return [record.data() for record in result]
 
 if __name__ == "__main__":
-    # Database connection details
+  
     URI = "bolt://localhost:7687"
     USER = "neo4j"
     PASSWORD = "jesusizma1" 
@@ -58,7 +58,7 @@ if __name__ == "__main__":
     username = "Kebede"
     recommendations = recommender.recommend_movies(username)
 
-    # Display recommendations
+  
     print("Recommendations for", username)
     print("\nContent-Based Recommendations:")
     for movie in recommendations["Content-Based Recommendations"]:
