@@ -1,8 +1,4 @@
-adjustments:
 
-markdown
-
-Copy
 # Movie Recommendation System
 
 This project demonstrates a Movie Recommendation System using a Neo4j graph database and Python. The system utilizes both content-based filtering and collaborative filtering techniques to recommend movies to users based on their viewing history and preferences. Below is a graphical representation of the data model used in this project.
