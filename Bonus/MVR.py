@@ -1,132 +1,111 @@
-import pandas as pd
 from neo4j import GraphDatabase
+import pandas as pd
 import ast
 
-#  Preprocess the Dataset
+# Connect to Neo4j
+URI = "bolt://localhost:7687"
+USERNAME = "neo4j"
+PASSWORD = "Nardi1234"
 
-movies_df = pd.read_csv('movies_metadata.csv', low_memory=False)
-ratings_df = pd.read_csv('ratings_small.csv')
+driver = GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD))
 
-movies_df = movies_df[['id', 'title', 'genres', 'release_date']]
-movies_df = movies_df[movies_df['id'].str.isdigit()]
-movies_df['id'] = movies_df['id'].astype(int)
-
-def parse_genres(genres_str):
-    genres = []
-    try:
-        genres_list = ast.literal_eval(genres_str)
-        for genre in genres_list:
-            genres.append(genre['name'])
-    except:
-        pass
-    return genres
-
-movies_df['genres_list'] = movies_df['genres'].apply(parse_genres)
-movies_df['release_year'] = pd.to_datetime(movies_df['release_date'], errors='coerce').dt.year
-
-ratings_df = ratings_df[ratings_df['movieId'].isin(movies_df['id'])]
-
-driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "Nardi1234"))  # Replace 'your_password' with your Neo4j password
-
-def create_constraints(tx):
-    tx.run("CREATE CONSTRAINT IF NOT EXISTS FOR (u:User) REQUIRE u.userId IS UNIQUE;")
-    tx.run("CREATE CONSTRAINT IF NOT EXISTS FOR (m:Movie) REQUIRE m.id IS UNIQUE;")
-    tx.run("CREATE CONSTRAINT IF NOT EXISTS FOR (g:Genre) REQUIRE g.name IS UNIQUE;")
-
-with driver.session() as session:
-    session.execute_write(create_constraints)
-
-def add_movies_and_genres(tx, movies_batch):
-    query = """
-    UNWIND $movies AS movie
-    MERGE (m:Movie {id: movie.id})
-    SET m.title = movie.title, m.release_year = movie.release_year
-    FOREACH (genreName IN movie.genres_list |
-        MERGE (g:Genre {name: genreName})
-        MERGE (m)-[:BELONGS_TO]->(g)
-    )
-    """
-    tx.run(query, movies=movies_batch)
-
-movies_data = movies_df[['id', 'title', 'release_year', 'genres_list']].to_dict('records')
-batch_size = 1000
-with driver.session() as session:
-    for i in range(0, len(movies_data), batch_size):
-        session.execute_write(add_movies_and_genres, movies_data[i:i+batch_size])
-
-def add_users_and_ratings(tx, ratings_batch):
-    query = """
-    UNWIND $ratings AS rating
-    MERGE (u:User {userId: rating.userId})
-    MERGE (m:Movie {id: rating.movieId})
-    MERGE (u)-[r:WATCHED]->(m)
-    SET r.rating = rating.rating
-    """
-    tx.run(query, ratings=ratings_batch)
-
-ratings_data = ratings_df[['userId', 'movieId', 'rating']].to_dict('records')
-batch_size = 10000
-with driver.session() as session:
-    for i in range(0, len(ratings_data), batch_size):
-        session.execute_write(add_users_and_ratings, ratings_data[i:i+batch_size])
-
-def recommend_content_based(tx, user_id, limit=10):
-    query = """
-    MATCH (u:User {userId: $user_id})-[:WATCHED]->(m:Movie)-[:SIMILAR]->(rec:Movie)
-    WHERE NOT (u)-[:WATCHED]->(rec)
-    RETURN rec.title AS title, rec.release_year AS year
-    LIMIT $limit
-    """
-    result = tx.run(query, user_id=user_id, limit=limit)
-    return [record for record in result]
-
-def recommend_collaborative(tx, user_id, limit=10):
-    query = """
-    MATCH (u1:User {userId: $user_id})-[:WATCHED]->(m:Movie)<-[:WATCHED]-(u2:User)
-    MATCH (u2)-[:WATCHED]->(rec:Movie)
-    WHERE NOT (u1)-[:WATCHED]->(rec)
-    RETURN rec.title AS title, rec.release_year AS year
-    LIMIT $limit
-    """
-    result = tx.run(query, user_id=user_id, limit=limit)
-    return [record for record in result]
-
-def recommend_movies(user_id):
+def execute_query(query, parameters=None):
     with driver.session() as session:
-        recommendations = session.execute_read(recommend_content_based, user_id=user_id)
-        if not recommendations:
-            # Fallback to collaborative filtering
-            recommendations = session.execute_read(recommend_collaborative, user_id=user_id)
-        return recommendations
+        session.run(query, parameters)
+
+def preprocess_data():
+    movies_df = pd.read_csv("movies_metadata.csv", low_memory=False)
+    ratings_df = pd.read_csv("ratings_small.csv")
+
+    # Clean movies data
+    movies_df = movies_df[['id', 'title', 'genres', 'release_date']].dropna()
+    movies_df['release_year'] = movies_df['release_date'].apply(lambda x: x.split('-')[0])
+
+    # Parse genres correctly
+    def extract_genres(genre_str):
+        try:
+            genre_list = ast.literal_eval(genre_str)  # Convert JSON-like string to Python list
+            return [g['name'] for g in genre_list] if isinstance(genre_list, list) else []
+        except Exception:
+            return []
+
+    movies_df['genres'] = movies_df['genres'].apply(extract_genres)
+
+    return movies_df, ratings_df
+
+def import_movies_and_genres(movies_df):
+    for _, row in movies_df.iterrows():
+        genres = row['genres']  # Extract genres
+
+        # Create or match Movie nodes based on the unique 'id' property
+        execute_query(
+            """
+            MERGE (m:Movie {id: $id})
+            SET m.title = $title, m.release_year = $release_year
+            """,
+{"id": row['id'], "title": row['title'], "release_year": row['release_year']}
+        )
+
+        # Link movies to their genres
+        for genre in genres:
+            execute_query(
+                """
+                MERGE (g:Genre {name: $genre})
+                MERGE (m:Movie {id: $id})-[:BELONGS_TO]->(g)
+                """,
+                {"genre": genre, "id": row['id']}
+            )
+
+
+def import_ratings(ratings_df):
+    for _, row in ratings_df.iterrows():
+        execute_query(
+            """
+            MERGE (u:User {id: $userId})
+            MERGE (m:Movie {id: $movieId})
+            MERGE (u)-[:WATCHED {rating: $rating}]->(m)
+            """,
+            {"userId": row['userId'], "movieId": row['movieId'], "rating": row['rating']}
+        )
+
+def generate_content_recommendations(user_id):
+    query = """
+    MATCH (u:User {id: $userId})-[:WATCHED]->(m:Movie)-[:SIMILAR]->(rec:Movie)
+    RETURN rec.title AS recommendation
+    LIMIT 10
+    """
+    with driver.session() as session:
+        return [record['recommendation'] for record in session.run(query, {"userId": user_id})]
+
+def generate_collaborative_recommendations(user_id):
+    query = """
+    MATCH (u:User {id: $userId})-[:SIMILAR_USER]->(similar:User)-[:WATCHED]->(rec:Movie)
+    WHERE NOT (u)-[:WATCHED]->(rec)
+    RETURN rec.title AS recommendation
+    LIMIT 10
+    """
+    with driver.session() as session:
+        return [record['recommendation'] for record in session.run(query, {"userId": user_id})]
 
 if __name__ == "__main__":
-    # Create the movie-similarity graph in Neo4j
-    with driver.session() as session:
-        session.run("""
-        CALL gds.graph.project(
-          'movie-similarity-graph',
-          'Movie',
-          {BELONGS_TO: {type: 'BELONGS_TO', orientation: 'UNDIRECTED'}}
-        )
-        """)
+    # Preprocess data
+    movies_df, ratings_df = preprocess_data()
+    print(movies_df[['title', 'genres']].head(10))
 
-        session.run("""
-        CALL gds.nodeSimilarity.write('movie-similarity-graph', {
-          similarityCutoff: 0.1,
-          writeRelationshipType: 'SIMILAR',
-          writeProperty: 'similarity'
-        })
-        """)
+    print("Data preprocessed successfully.")
 
-    # Get recommendations for a user
+    # Import movies and genres into Neo4j
+    import_movies_and_genres(movies_df)
+    import_ratings(ratings_df)
+    print("Data imported into Neo4j.")
+
+    # Generate recommendations
     user_id = 1
-    recommendations = recommend_movies(user_id)
+    recommendations = generate_content_recommendations(user_id)
+    if not recommendations:
+        recommendations = generate_collaborative_recommendations(user_id)
 
-    if recommendations:
-        print(f"Recommendations for User {user_id}:")
-        for rec in recommendations:
-            print(f"- {rec['title']} ({rec['year']})")
-    else:
-        print(f"No recommendations found for User {user_id}.")
-    
-    driver.close()
+    if not recommendations:
+        recommendations = ["No recommendations available."]
+
+    print(f"Recommended movies for user {user_id}: {recommendations}")

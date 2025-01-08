@@ -60,17 +60,6 @@ The graph database visualized above shows:
 ```bash
 pip install neo4j
  ```
-## Set up  Neo4j database:
-Start the Neo4j database server.
-Import the provided data model using the Cypher scripts in the scripts folder.
-Update database connection credentials in the Python script:
-
-URI = "bolt://localhost:7687"
-USER = "neo4j"
-PASSWORD = "password"
-Run the recommendation system:
-
-python recommend.py
 ## Example Queries
 List All Movies:
  ```cypher
