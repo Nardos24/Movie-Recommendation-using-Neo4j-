@@ -20,16 +20,23 @@ def preprocess_data():
     # Clean movies data
     movies_df = movies_df[['id', 'title', 'genres', 'release_date']].dropna()
     movies_df['release_year'] = movies_df['release_date'].apply(lambda x: x.split('-')[0])
-    movies_df['genres'] = movies_df['genres'].apply(
-        lambda x: [g['name'] for g in ast.literal_eval(x)] if pd.notnull(x) and isinstance(x, str) else []
-    )
 
-    ratings_df = ratings_df[['userId', 'movieId', 'rating']]
+    # Parse genres correctly
+    def extract_genres(genre_str):
+        try:
+            genre_list = ast.literal_eval(genre_str)  # Convert JSON-like string to Python list
+            return [g['name'] for g in genre_list] if isinstance(genre_list, list) else []
+        except Exception:
+            return []
+
+    movies_df['genres'] = movies_df['genres'].apply(extract_genres)
+
     return movies_df, ratings_df
+
 
 def import_movies_and_genres(movies_df):
     for _, row in movies_df.iterrows():
-        genres = row['genres']
+        genres = row['genres']  # Extract genres
         execute_query(
             """
             MERGE (m:Movie {id: $id, title: $title, release_year: $release_year})
@@ -44,6 +51,7 @@ def import_movies_and_genres(movies_df):
                 """,
                 {"genre": genre}
             )
+
 
 def import_ratings(ratings_df):
     for _, row in ratings_df.iterrows():
