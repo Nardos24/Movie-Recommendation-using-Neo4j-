@@ -37,7 +37,6 @@ The graph database visualized above shows:
 
 - Users connected to the movies they have watched (WATCHED).
 - Movies connected to their respective genres (BELONGS_TO).
-![Description of image](./images/MR.jpg)
 
 **Example**: Feven has watched Interstellar and The Shawshank Redemption, which belong to the genres Sci-Fi and Drama, respectively.
 
