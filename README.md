@@ -62,14 +62,14 @@ Install dependencies:
 ```bash
 pip install neo4j
  ```
-## Set up your Neo4j database:
+## Set up  Neo4j database:
 Start the Neo4j database server.
 Import the provided data model using the Cypher scripts in the scripts folder.
-Update your database connection credentials in the Python script:
+Update database connection credentials in the Python script:
 
 URI = "bolt://localhost:7687"
 USER = "neo4j"
-PASSWORD = "your_password"
+PASSWORD = "password"
 Run the recommendation system:
 
 python recommend.py

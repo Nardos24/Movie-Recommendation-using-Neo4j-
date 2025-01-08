@@ -33,25 +33,28 @@ def preprocess_data():
 
     return movies_df, ratings_df
 
-
 def import_movies_and_genres(movies_df):
     for _, row in movies_df.iterrows():
         genres = row['genres']  # Extract genres
+
+        # Create or update Movie nodes
         execute_query(
             """
-            MERGE (m:Movie {id: $id, title: $title, release_year: $release_year})
+            MERGE (m:Movie {id: $id})
+            SET m.title = $title, m.release_year = $release_year
             """,
             {"id": row['id'], "title": row['title'], "release_year": row['release_year']}
         )
+
+        # Link movies to their genres
         for genre in genres:
             execute_query(
                 """
                 MERGE (g:Genre {name: $genre})
-                MERGE (m)-[:BELONGS_TO]->(g)
+                MERGE (m:Movie {id: $id})-[:BELONGS_TO]->(g)
                 """,
-                {"genre": genre}
+                {"genre": genre, "id": row['id']}
             )
-
 
 def import_ratings(ratings_df):
     for _, row in ratings_df.iterrows():
@@ -84,13 +87,18 @@ def generate_collaborative_recommendations(user_id):
         return [record['recommendation'] for record in session.run(query, {"userId": user_id})]
 
 if __name__ == "__main__":
+    # Preprocess data
     movies_df, ratings_df = preprocess_data()
+    print(movies_df[['title', 'genres']].head(10))
+
     print("Data preprocessed successfully.")
 
+    # Import movies and genres into Neo4j
     import_movies_and_genres(movies_df)
     import_ratings(ratings_df)
     print("Data imported into Neo4j.")
 
+    # Generate recommendations
     user_id = 1
     recommendations = generate_content_recommendations(user_id)
     if not recommendations:
